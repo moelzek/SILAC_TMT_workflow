@@ -1,0 +1,279 @@
+---
+title: "parse PSM file and quality check PSMs"
+author: "Mohamed Elzek"
+date: "`r format(Sys.time(), '%b %d %Y')`"
+output:
+  html_notebook:
+    number_sections: TRUE
+    toc: true
+    theme: 'cerulean'
+    highlight: 'tango'
+    code_folding: hide
+    df_print: paged
+    toc_float:
+      collapsed: FALSE
+      smooth_scroll: FALSE
+---
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(fig.width=12,fig.height=8,warning=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
+```
+
+```{r setup, echo=F}
+rm(list=ls())
+library(tidyverse)
+library(MSnbase)
+library(camprotR)
+library(ggplot2)
+library(RColorBrewer)
+
+source("./functions.R")
+```
+
+
+# Reading PSM data
+
+We start by reading the files containing PSM level data. These files were searched for Light and heavy indenpendently on  from proteome discoverer 2.5.
+```{r upload files}
+
+infiles_heavy <- Sys.glob("../../raw_data/hyperplexed/Modified PD search for 3 experiments/SILAC heavy/*")
+infiles_light <- Sys.glob("../../raw_data/hyperplexed/Modified PD search for 3 experiments/SILAC light/*")
+
+names(infiles_heavy) <- gsub("PSMs.txt$", "_heavy", basename(infiles_heavy))
+names(infiles_light) <- gsub("PSMs.txt$", "_light", basename(infiles_light))
+
+infiles <- c(infiles_heavy, infiles_light)
+```
+
+# Parse features
+The first step is to remove contaminant proteins. These were defined using the cRAP database (REF). Below, we parse the cRAP fasta to extract the IDs for the cRAP proteins, in both ‘cRAP’ format and Uniprot IDs for these proteins.
+```{r}
+
+crap_fasta_inf <- system.file(
+  "extdata", "cRAP_FullIdentifiers.fasta.gz", 
+  package = "camprotR"
+)
+
+# Load the cRAP FASTA used for the PD search
+crap.fasta <- Biostrings::fasta.index(crap_fasta_inf, seqtype = "AA")
+
+# Define a base R version of stringr::str_extract_all()
+# base R str_extract
+str_extract_all <- function(pattern, string) {
+  gregexpr(pattern, string, perl = TRUE) %>% 
+    regmatches(string, .) %>% 
+    unlist()
+}
+
+# Extract the non cRAP UniProt accessions associated with each cRAP protein
+crap.accessions <- crap.fasta %>% 
+  pull(desc) %>% 
+  str_extract_all("(?<=\\|).*?(?=\\|)", .) %>% 
+  unlist()
+```
+
+We run a loop to read the heavy and light PSM file using `parse_features` which will remove features which may originate from contaminants, as well as features which don’t have a unique master protein.
+```{r}
+
+unfilt_heavy_psm <- NULL
+for (i in infiles_heavy) {
+  #sample_name <- names(infiles[i])
+  sample_name <- gsub("*_PSMs.txt","",basename(i))
+  x<- parse_features(read.delim(i), TMT=TRUE, level="PSM", unique_master = TRUE, filter_crap = TRUE, crap_proteins = crap.accessions)
+  x$sample <- sample_name 
+  
+  unfilt_heavy_psm[[sample_name]] <- x
+}
+
+
+
+unfilt_light_psm <- NULL
+for (i in infiles_light) {
+  #sample_name <- names(infiles[i])
+  sample_name <- gsub("*_PSMs.txt","",basename(i))
+  x<- parse_features(read.delim(i), TMT=TRUE, level="PSM", unique_master = TRUE, filter_crap = TRUE, crap_proteins = crap.accessions)
+  x$sample <- sample_name 
+  
+  unfilt_light_psm[[sample_name]] <- x
+}
+
+#sample_name <- gsub("../../raw_data/hyperplexed/Modified PD search for 3 experiments*", "", basename(infiles))
+```
+
+
+We then combine two lists of heavy and light labelled PSMs before converting in  **MSnsets** 
+```{r}
+
+
+#.nams <- paste0("Rep", rep(1:3, each = 2), "_set", rep(1:2, 3))
+#names(PSM) <- c(paste0(.nams, "_HLOPIT"), paste0(.nams, "_MLOPIT"))
+
+names(unfilt_heavy_psm) <- paste0("Heavy_", names(unfilt_heavy_psm))
+names(unfilt_light_psm) <- paste0("light_", names(unfilt_light_psm))
+
+
+makeMsnset <- function(obj){
+  
+  abundance_cols <- colnames(obj)[grepl('Abundance.', colnames(obj))]
+    
+  psm_e <- as.matrix(obj[,abundance_cols])
+  psm_f <- obj[,setdiff(colnames(obj), abundance_cols)]
+    
+  # update the column names to remove the 'Abundance.` prefix
+  colnames(psm_e) <- gsub('Abundance.', '', colnames(psm_e))
+    
+  MSnbase::MSnSet(exprs=psm_e, fData=psm_f)
+}
+psm_res_light <- unfilt_light_psm %>% lapply(makeMsnset)
+psm_res_heavy <- unfilt_heavy_psm %>% lapply(makeMsnset)
+
+psm_res <- c(psm_res_heavy,psm_res_light)
+
+```
+
+
+Then we remove features without quantification values
+```{r}
+psm_res <- psm_res %>% lapply(function(x){
+  x <- x[rowSums(!is.na(exprs(x)))>0, ]
+  camprotR:::message_parse(fData(x), 'Master.Protein.Accessions', "features without quantification removed")
+  x  
+})
+
+```
+
+# Quality checks of the PSM level data
+## plot quantification distributions
+```{r}
+psm_res %>% names() %>% lapply(function(x){
+  p <- psm_res[[x]] %>% log(base=2) %>%
+    plot_quant() +
+    ylab('PSM intensity (log2)')  +
+    theme_camprot() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                hjust = 1), plot.title = element_text(size=10)) +
+    ggtitle(x)
+  
+  print(p)
+  
+  return(NULL)
+})
+```
+
+
+## Notch inspection
+The distribution of TMT intensities obtained by Orbitrap has been observed to have a ‘notch’ where few values are observed (Hughes et al. 2017). This presence of the notch is dependent on the MS settings, most notably automatic gain control (AGC) target and maximum injection time, and the abundance of the peptides injected. We can inspect the notch using the `plot_TMT_notch` function, which annotates the notch region and the proportion of values below the upper notch boundary.
+
+Since this data was run on the Orbitrap Eclipse with the lastest tune software, we dont expect the notch to be of major influnce.
+In the case, we see that most proteins have zero PSM intensities below the notch. The vast majority of protein have <10% PSMs at/below the notch, indicating the notch is unlikely to be problematic with this dataset.
+```{r}
+psm_res %>% names() %>% lapply(function(x){
+  p <- plot_TMT_notch(psm_res[[x]]) + theme (plot.title = element_text(size=12)) + ggtitle(x)
+  print(p)
+  
+  p <- plot_TMT_notch(psm_res[[x]], facet_by_sample=TRUE)  + theme (plot.title = element_text(size=12)) + ggtitle(x)
+  print(p)
+  
+  return(NULL)
+})
+```
+
+```{r}
+
+psm_res %>% names() %>% lapply(function(x){
+  p <- psm_res[[x]] %>% get_notch_per_protein()%>%plot_fraction_below_notch_per_prot() + theme (plot.title = element_text(size=12)) + ggtitle(x)
+  print(p)
+  p <- psm_res[[x]] %>% get_notch_per_protein()%>%plot_below_notch_per_prot() + theme (plot.title = element_text(size=12)) + ggtitle(x)
+  print(p)
+   
+   
+  return(NULL)
+})
+
+```
+
+Again, MLOPIT fractions of protein affected by notch is higher than HLOPIT, but the majority is still between 1-5
+
+## Signal to noise
+Note that where the signal:noise > 10, there are far fewer missing values.131C and 126 tags in multiLOPIT and When inspecting the relationship between tag and missing values when signal:noise > 10. Note that in HyperLOPIT, 131 is mostly unlabeled
+```{r, }
+
+psm_res %>% names() %>% lapply(function(x){
+  p <- plot_missing_SN(psm_res[[x]], bins =30) +  theme (plot.title = element_text(size=12))  + ggtitle(x)
+  print(p)
+  p <- plot_missing_SN_per_sample(psm_res[[x]], bins =30) +  theme (plot.title = element_text(size=12))  + ggtitle(x)
+  print(p)
+
+  return(NULL)
+})
+
+```
+
+```{r, warning=FALSE}
+psm_res %>% names() %>% lapply(function(x){
+ p <- plot_TMT_notch(psm_res[[x]]) +
+  ggtitle(paste(x,'Before filtering')) +
+  theme_camprot(base_size = 10)
+print(p)
+
+p <- filter_TMT_PSMs(psm_res[[x]], inter_thresh = 50, sn_thresh = 10)%>%plot_TMT_notch()+  ggtitle(paste(x,'After filtering')) +
+  theme_camprot(base_size = 10)
+print(p)
+  return(NULL)
+})
+
+```
+Let's check co-isolation interference and SN ratio on the whole dataset
+```{r}
+
+ # Isolation interference in percent
+for (i in seq(psm_res)){
+ p<- summary(fData(psm_res[[i]])$Isolation.Interference.in.Percent)
+ print(p)
+}
+     
+
+psm_res %>% names() %>% lapply(function(x){
+p <-  ggplot(fData(psm_res[[x]]), aes(Isolation.Interference.in.Percent)) +
+geom_histogram(breaks=seq(0, 100, by = 5))+labs (x="% Isolation interference") + ggtitle(x)
+print(p)
+ 
+return(NULL)
+  
+})
+
+
+# SN to noise
+
+for (i in seq(psm_res)){
+ p<- summary(fData(psm_res[[i]])$Average.Reporter.SN)
+ print(p)
+}
+     
+
+psm_res %>% names() %>% lapply(function(x){
+p <-  ggplot(fData(psm_res[[x]]), aes(Average.Reporter.SN)) +
+geom_histogram(breaks=seq(0, 500, by = 50))+labs (x="Average Reporter SN") + ggtitle(x)
+print(p)
+ 
+return(NULL)
+  
+})
+
+```
+There is no significant difference in co-isolation interference between HLOPIT and MLOPIT. However, the signal to noise is slightly higher for MLOPIT potentially due to labelling less material 
+
+## plot missing values
+```{r}
+
+for (i in seq(psm_res)) {
+  naplot(psm_res[[i]], col="black", las = 2, reorderColumns = FALSE, 
+         main = names(psm_res)[i], cex.axis = 2)
+}
+```
+
+save PSM set
+```{r}
+saveRDS(psm_res, "../results/psm/psm_raw_LOPIT.rds")
+
+```
+
