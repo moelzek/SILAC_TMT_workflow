@@ -18,34 +18,71 @@ output:
 knitr::opts_chunk$set(fig.width=12,fig.height=8,warning=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
 ```
 
-```{r setup, echo=F}
+```{r setup, warning=FALSE, message=FALSE}
 rm(list=ls())
 library(tidyverse)
 library(MSnbase)
 library(camprotR)
 library(ggplot2)
 library(RColorBrewer)
+library(knitr)
+library(kableExtra)
 
-source("./functions.R")
+source("../configs/functions.R")
 ```
 
 
 # Reading PSM data
 
+Two sample types were run on the mass spec:
+
+**1. Using Heavy crosslinked and Light non-crosslinked sample**
+From these samples, we tested:
+* The optimal ratios between heavy and light for MS qualification accuracy
+* The effects of label swabs
+* The optimal parameters for Real time search, and the MS3 methods including FDR and Cuttoff methods
+* The effects of label swabs
+
+**2. Using Heavy and Light non-crosslinked samples**
+* The effect of cycle duty length
+* The optimal FAIMS parameters
+
+The PD data from the MS runs of some methods were analysed by Cat, here is a link to an excel table the summarise the identification numbers of some of the methods.
+
+I dont have the design of sampleTest2 label swap, but for sampleTest 1 mixes ratios between light and heavy  ![*ratio between H and L*](../shared/ratios.png) 
 We start by reading the files containing PSM level data. These files were searched for Light and heavy indenpendently on  from proteome discoverer 2.5.
+
 ```{r upload files}
 
-infiles_heavy <- Sys.glob("../../raw_data/hyperplexed/Modified PD search for 3 experiments/SILAC heavy/*")
-infiles_light <- Sys.glob("../../raw_data/hyperplexed/Modified PD search for 3 experiments/SILAC light/*")
+infiles_heavy <- Sys.glob("../../raw_data/hyperplexed/Modified PD search/SILAC heavy/*PSMs.txt")
+infiles_light <- Sys.glob("../../raw_data/hyperplexed/Modified PD search/SILAC light/*PSMs.txt")
 
-names(infiles_heavy) <- gsub("PSMs.txt$", "_heavy", basename(infiles_heavy))
-names(infiles_light) <- gsub("PSMs.txt$", "_light", basename(infiles_light))
+intersecting <- intersect(basename(infiles_heavy),basename(infiles_light))
+
+outersecting <- function(x){ 
+  sort(c(setdiff(basename(infiles_heavy),basename(infiles_light)), setdiff(basename(infiles_light),basename(infiles_heavy))))}
+
+
+infiles_heavy <- infiles_heavy[basename(infiles_heavy)%in%basename(infiles_light)]
+infiles_light <- infiles_light[basename(infiles_light)%in%basename(infiles_heavy)]
+
+names(infiles_heavy) <- gsub("_PSMs.txt$", "", basename(infiles_heavy))
+names(infiles_light) <- gsub("_PSMs.txt$", "", basename(infiles_light)) 
+
+
 
 infiles <- c(infiles_heavy, infiles_light)
+
+file.names <- data.frame("Heavy"=sort(names(infiles_heavy)), "light"=sort(names(infiles_light)))
+kable(file.names, caption = "") %>%
+  kable_classic(full_width = F)
 ```
+There are **26** files intersecting between heavy and light analysis which were kept for subsequent analysis. 6 files were not overlapping hence were excluded. 
+
 
 # Parse features
-The first step is to remove contaminant proteins. These were defined using the cRAP database (REF). Below, we parse the cRAP fasta to extract the IDs for the cRAP proteins, in both ‘cRAP’ format and Uniprot IDs for these proteins.
+
+The first step is to remove contaminant proteins. These were defined using the cRAP database. Below, we parse the cRAP fasta to extract the IDs for the cRAP proteins, in both ‘cRAP’ format and Uniprot IDs for these proteins.
 ```{r}
 
 crap_fasta_inf <- system.file(
@@ -71,42 +108,37 @@ crap.accessions <- crap.fasta %>%
   unlist()
 ```
 
-We run a loop to read the heavy and light PSM file using `parse_features` which will remove features which may originate from contaminants, as well as features which don’t have a unique master protein.
-```{r}
+We run a loop to read the heavy and light PSM file using `parse_features` from [`camprotR`](https://github.com/CambridgeCentreForProteomics/camprotR)  which will remove features which may originate from contaminants, as well as features which don’t have a unique master protein.
+```{r, message=F}
 
+
+infiles_heavy <- infiles_heavy[names(infiles_heavy)!="CF_hyperplexTESTsample_FDR_CO_SPSMS3_Mix2"]
+infiles_heavy <- infiles_heavy[names(infiles_heavy)!="CF_hyperplexTESTsample_FDR_CO_SPSMS3_Mix4"]
 unfilt_heavy_psm <- NULL
+
 for (i in infiles_heavy) {
-  #sample_name <- names(infiles[i])
   sample_name <- gsub("*_PSMs.txt","",basename(i))
   x<- parse_features(read.delim(i), TMT=TRUE, level="PSM", unique_master = TRUE, filter_crap = TRUE, crap_proteins = crap.accessions)
   x$sample <- sample_name 
-  
   unfilt_heavy_psm[[sample_name]] <- x
 }
 
-
-
+infiles_light <- infiles_light[names(infiles_light)!="CF_hyperplexTESTsample_FDR_CO_SPSMS3_Mix2"]
+infiles_light <- infiles_light[names(infiles_light)!="CF_hyperplexTESTsample_FDR_CO_SPSMS3_Mix4"]
 unfilt_light_psm <- NULL
+
 for (i in infiles_light) {
-  #sample_name <- names(infiles[i])
   sample_name <- gsub("*_PSMs.txt","",basename(i))
   x<- parse_features(read.delim(i), TMT=TRUE, level="PSM", unique_master = TRUE, filter_crap = TRUE, crap_proteins = crap.accessions)
   x$sample <- sample_name 
-  
   unfilt_light_psm[[sample_name]] <- x
 }
 
-#sample_name <- gsub("../../raw_data/hyperplexed/Modified PD search for 3 experiments*", "", basename(infiles))
 ```
-
+Two files were further excluded `CF_hyperplexTESTsample_FDR_CO_SPSMS3_Mix2_PSMs` and `CF_hyperplexTESTsample_FDR_CO_SPSMS3_Mix4_PSMs` because they contained empty values in the heavy folder. In total, there are **24** files in both pairs for the subsequent analysis
 
 We then combine two lists of heavy and light labelled PSMs before converting in  **MSnsets** 
 ```{r}
-
-
-#.nams <- paste0("Rep", rep(1:3, each = 2), "_set", rep(1:2, 3))
-#names(PSM) <- c(paste0(.nams, "_HLOPIT"), paste0(.nams, "_MLOPIT"))
-
 names(unfilt_heavy_psm) <- paste0("Heavy_", names(unfilt_heavy_psm))
 names(unfilt_light_psm) <- paste0("light_", names(unfilt_light_psm))
 
@@ -127,30 +159,28 @@ psm_res_light <- unfilt_light_psm %>% lapply(makeMsnset)
 psm_res_heavy <- unfilt_heavy_psm %>% lapply(makeMsnset)
 
 psm_res <- c(psm_res_heavy,psm_res_light)
-
 ```
 
 
-Then we remove features without quantification values
+Then we remove PSM features without quantification values
 ```{r}
 psm_res <- psm_res %>% lapply(function(x){
   x <- x[rowSums(!is.na(exprs(x)))>0, ]
   camprotR:::message_parse(fData(x), 'Master.Protein.Accessions', "features without quantification removed")
   x  
 })
-
 ```
 
 # Quality checks of the PSM level data
 ## plot quantification distributions
-```{r}
+```{r, message=FALSE, warning=FALSE, results='hide'}
 psm_res %>% names() %>% lapply(function(x){
   p <- psm_res[[x]] %>% log(base=2) %>%
     plot_quant() +
     ylab('PSM intensity (log2)')  +
     theme_camprot() +
     theme(axis.text.x = element_text(angle = 45, vjust = 1, 
-                hjust = 1), plot.title = element_text(size=10)) +
+                hjust = 1), plot.title = element_text(size=10, hjust=0.5)) +
     ggtitle(x)
   
   print(p)
@@ -161,54 +191,95 @@ psm_res %>% names() %>% lapply(function(x){
 
 
 ## Notch inspection
-The distribution of TMT intensities obtained by Orbitrap has been observed to have a ‘notch’ where few values are observed (Hughes et al. 2017). This presence of the notch is dependent on the MS settings, most notably automatic gain control (AGC) target and maximum injection time, and the abundance of the peptides injected. We can inspect the notch using the `plot_TMT_notch` function, which annotates the notch region and the proportion of values below the upper notch boundary.
+The distribution of TMT intensities obtained by Orbitrap has been observed to have a ‘notch’ where few values are observed [Hughes et al. 2017](https://pubs.acs.org/doi/10.1021/acs.jproteome.7b00092). This presence of the notch is dependent on the MS settings, most notably automatic gain control (AGC) target and maximum injection time, and the abundance of the peptides injected. We can inspect the notch using the `plot_TMT_notch` function, which annotates the notch region and the proportion of values below the upper notch boundary.
 
-Since this data was run on the Orbitrap Eclipse with the lastest tune software, we dont expect the notch to be of major influnce.
-In the case, we see that most proteins have zero PSM intensities below the notch. The vast majority of protein have <10% PSMs at/below the notch, indicating the notch is unlikely to be problematic with this dataset.
-```{r}
+Since this data was run on the Orbitrap Eclipse with the lastest tune software, we dont expect the notch to be of major influnce. In the case, we see that most proteins have zero PSM intensities below the notch. The vast majority of protein have <10% PSMs at/below the notch, indicating the notch is unlikely to be problematic with this dataset.
+
+
+```{r , message=FALSE, results='hide'}
 psm_res %>% names() %>% lapply(function(x){
-  p <- plot_TMT_notch(psm_res[[x]]) + theme (plot.title = element_text(size=12)) + ggtitle(x)
+  p <- plot_TMT_notch(psm_res[[x]]) + theme (plot.title = element_text(size=10, hjust = 0.5)) + ggtitle(x)
   print(p)
   
-  p <- plot_TMT_notch(psm_res[[x]], facet_by_sample=TRUE)  + theme (plot.title = element_text(size=12)) + ggtitle(x)
+  p <- plot_TMT_notch(psm_res[[x]], facet_by_sample=TRUE)  + theme (plot.title = element_text(size=10, hjust = 0.5)) + ggtitle(x)
   print(p)
   
   return(NULL)
 })
 ```
+* For the ratio mixes experiment, 129N was probably swabbed with 129C. So 129C is ratios of 1:10 rather than 1:5. Lower spike in ratios are associated with more spectra below the notch area. 
 
-```{r}
+* For light labelled samples, there is binomial peak of PSM intensity in all mixes excpet when all channels are labelled (e.g. mix5 for sampleTest and mix1 from labelswap)
 
-psm_res %>% names() %>% lapply(function(x){
-  p <- psm_res[[x]] %>% get_notch_per_protein()%>%plot_fraction_below_notch_per_prot() + theme (plot.title = element_text(size=12)) + ggtitle(x)
-  print(p)
-  p <- psm_res[[x]] %>% get_notch_per_protein()%>%plot_below_notch_per_prot() + theme (plot.title = element_text(size=12)) + ggtitle(x)
-  print(p)
-   
-   
-  return(NULL)
-})
 
-```
 
-Again, MLOPIT fractions of protein affected by notch is higher than HLOPIT, but the majority is still between 1-5
+
 
 ## Signal to noise
-Note that where the signal:noise > 10, there are far fewer missing values.131C and 126 tags in multiLOPIT and When inspecting the relationship between tag and missing values when signal:noise > 10. Note that in HyperLOPIT, 131 is mostly unlabeled
-```{r, }
-
+We will still want to remove low Signal:Noise (S:N) PSMs, since the quantification values will be less accurate and there will be more missing values and sub-notch values. We can inspect the relationship between S:N and missing values using the `plot_missing_SN` function.
+```{r, message=FALSE, results='hide'}
 psm_res %>% names() %>% lapply(function(x){
-  p <- plot_missing_SN(psm_res[[x]], bins =30) +  theme (plot.title = element_text(size=12))  + ggtitle(x)
+  p <- plot_missing_SN(psm_res[[x]], bins =30) +  theme (plot.title = element_text(size=10, hjust=0.5))  + ggtitle(x)
   print(p)
-  p <- plot_missing_SN_per_sample(psm_res[[x]], bins =30) +  theme (plot.title = element_text(size=12))  + ggtitle(x)
+  p <- plot_missing_SN_per_sample(psm_res[[x]], bins =30) +  theme (plot.title = element_text(size=10, hjust=0.5))  + ggtitle(x)
   print(p)
 
   return(NULL)
 })
 
 ```
+A signal to noise cutoff of 10 would probably lead to fewer missing values on the protein level. For most tags that are labeld there is low 
 
-```{r, warning=FALSE}
+```{r}
+for (i in seq(psm_res)){
+ p<- summary(fData(psm_res[[i]])$Average.Reporter.SN)
+ print(names(psm_res)[[i]])
+ print(p)
+}
+```     
+
+```{r message=FALSE, results='hide'}
+psm_res %>% names() %>% lapply(function(x){
+p <-  ggplot(fData(psm_res[[x]]), aes(Average.Reporter.SN)) +
+geom_histogram(breaks=seq(0, 500, by = 50))+labs (x="Average Reporter SN") + ggtitle(x)
+print(p)
+ 
+return(NULL)
+  
+})
+```
+
+## co-isolation intereference 
+Let's check co-isolation interference on the whole dataset
+```{r}
+
+ # Isolation interference in percent
+for (i in seq(psm_res)){
+ p<- summary(fData(psm_res[[i]])$Isolation.Interference.in.Percent)
+ print(names(psm_res)[[i]])
+ print(p)
+}
+```     
+
+```{r message=FALSE, results='hide'}     
+
+psm_res %>% names() %>% lapply(function(x){
+p <-  ggplot(fData(psm_res[[x]]), aes(Isolation.Interference.in.Percent)) +
+geom_histogram(breaks=seq(0, 100, by = 5))+labs (x="% Isolation interference") + ggtitle(x)
+print(p)
+ 
+return(NULL)
+  
+})
+
+
+
+```
+`hyperplexTESTsample3_labelSwap_SPSMS3`shows lower distribution for co-isolation interference
+
+
+Lets check intensity distributions after filtering the co-isolation interference to 50 adn the signal to noise ratio to 10
+```{r, message=F, warning=FALSE, results='hide'}
 psm_res %>% names() %>% lapply(function(x){
  p <- plot_TMT_notch(psm_res[[x]]) +
   ggtitle(paste(x,'Before filtering')) +
@@ -222,45 +293,7 @@ print(p)
 })
 
 ```
-Let's check co-isolation interference and SN ratio on the whole dataset
-```{r}
 
- # Isolation interference in percent
-for (i in seq(psm_res)){
- p<- summary(fData(psm_res[[i]])$Isolation.Interference.in.Percent)
- print(p)
-}
-     
-
-psm_res %>% names() %>% lapply(function(x){
-p <-  ggplot(fData(psm_res[[x]]), aes(Isolation.Interference.in.Percent)) +
-geom_histogram(breaks=seq(0, 100, by = 5))+labs (x="% Isolation interference") + ggtitle(x)
-print(p)
- 
-return(NULL)
-  
-})
-
-
-# SN to noise
-
-for (i in seq(psm_res)){
- p<- summary(fData(psm_res[[i]])$Average.Reporter.SN)
- print(p)
-}
-     
-
-psm_res %>% names() %>% lapply(function(x){
-p <-  ggplot(fData(psm_res[[x]]), aes(Average.Reporter.SN)) +
-geom_histogram(breaks=seq(0, 500, by = 50))+labs (x="Average Reporter SN") + ggtitle(x)
-print(p)
- 
-return(NULL)
-  
-})
-
-```
-There is no significant difference in co-isolation interference between HLOPIT and MLOPIT. However, the signal to noise is slightly higher for MLOPIT potentially due to labelling less material 
 
 ## plot missing values
 ```{r}
