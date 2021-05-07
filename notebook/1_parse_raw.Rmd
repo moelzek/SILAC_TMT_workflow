@@ -169,6 +169,40 @@ psm_res <- psm_res %>% lapply(function(x){
   camprotR:::message_parse(fData(x), 'Master.Protein.Accessions', "features without quantification removed")
   x  
 })
+
+psm_res_heavy <- psm_res_heavy %>% lapply(function(x){
+  x <- x[rowSums(!is.na(exprs(x)))>0, ]
+  x  
+})
+
+psm_res_light <- psm_res_light %>% lapply(function(x){
+  x <- x[rowSums(!is.na(exprs(x)))>0, ]
+  x  
+})
+```
+
+Then we plot venn diagrams for the intersection between heavy and light 
+```{r}
+for (i in seq(psm_res_heavy)) {
+  for (n in seq(psm_res_light)) {
+   venn.diagram(
+  x = list(fData(psm_res_heavy[[i]])$Master.Protein.Accessions, fData(psm_res_light[[n]])$Master.Protein.Accessions),
+  category.names = c("Heavy" , "Light"),
+  filename = paste0("../results/venn/Venndiagran for protein overlap between ", gsub("Heavy_","",names(psm_res_heavy)[i]), ".png"),
+  main = gsub("Heavy_","",names(psm_res_heavy)[i]),
+  col=c("#440154ff", '#21908dff'),
+  fill = c(alpha("#440154ff",0.3), alpha('#21908dff',0.3)),
+  fontfamily = "sans",
+  cat.fontfamily = "sans",
+  main.fontfamily = "sans",
+  cat.col = c("#440154ff", '#21908dff'),
+  margin = 0.05,
+  cat.pos = c(-140, 140),
+  cat.dist = c(0.05, 0.05),output =TRUE
+)
+  }
+}
+
 ```
 
 # Quality checks of the PSM level data
