@@ -27,6 +27,7 @@ library(ggplot2)
 library(RColorBrewer)
 library(knitr)
 library(kableExtra)
+library(VennDiagram)
 
 source("../configs/functions.R")
 ```
@@ -49,13 +50,43 @@ From these samples, we tested:
 
 The PD data from the MS runs of some methods were analysed by Cat, here is a link to an excel table the summarise the identification numbers of some of the methods.
 
-I dont have the design of sampleTest2 label swap, but for sampleTest 1 mixes ratios between light and heavy  ![*ratio between H and L*](../shared/ratios.png) 
+# Experimental design
+** sample 1**
+  ![*ratio between H and L*](../shared/ratios.png) 
+
+**Sample 2**
+Ratio | Tag
+------------- | -------------
+S1:1| 126
+S1:1| 127N 
+S1:5| 127C
+S1:5|128N
+S1:10|128C
+S1:10|129C
+S5:1|130C
+S5:1|130N
+S10:1|131C
+S10:1|129N
+**Sample 3**
+Ratio | Tag
+------------- | -------------
+S1:1| 126
+S1:1| 127N 
+S1:5| 127C
+S1:5|128N
+S1:10|128C
+S1:10|129N
+S5:1|129C
+S5:1|130N
+S10:1|130C
+S10:1|131N
+
 We start by reading the files containing PSM level data. These files were searched for Light and heavy indenpendently on  from proteome discoverer 2.5.
 
 ```{r upload files}
 
-infiles_heavy <- Sys.glob("../../raw_data/hyperplexed/Modified PD search/SILAC heavy/*PSMs.txt")
-infiles_light <- Sys.glob("../../raw_data/hyperplexed/Modified PD search/SILAC light/*PSMs.txt")
+infiles_heavy <- Sys.glob("../../raw_data/hyperplexed/110521/Heavy/*PSMs.txt")
+infiles_light <- Sys.glob("../../raw_data/hyperplexed/110521/Light/*PSMs.txt")
 
 intersecting <- intersect(basename(infiles_heavy),basename(infiles_light))
 
@@ -205,142 +236,9 @@ for (i in seq(psm_res_heavy)) {
 
 ```
 
-# Quality checks of the PSM level data
-## plot quantification distributions
-```{r, message=FALSE, warning=FALSE, results='hide'}
-psm_res %>% names() %>% lapply(function(x){
-  p <- psm_res[[x]] %>% log(base=2) %>%
-    plot_quant() +
-    ylab('PSM intensity (log2)')  +
-    theme_camprot() +
-    theme(axis.text.x = element_text(angle = 45, vjust = 1, 
-                hjust = 1), plot.title = element_text(size=10, hjust=0.5)) +
-    ggtitle(x)
-  
-  print(p)
-  
-  return(NULL)
-})
-```
-
-
-## Notch inspection
-The distribution of TMT intensities obtained by Orbitrap has been observed to have a ‘notch’ where few values are observed [Hughes et al. 2017](https://pubs.acs.org/doi/10.1021/acs.jproteome.7b00092). This presence of the notch is dependent on the MS settings, most notably automatic gain control (AGC) target and maximum injection time, and the abundance of the peptides injected. We can inspect the notch using the `plot_TMT_notch` function, which annotates the notch region and the proportion of values below the upper notch boundary.
-
-Since this data was run on the Orbitrap Eclipse with the lastest tune software, we dont expect the notch to be of major influnce. In the case, we see that most proteins have zero PSM intensities below the notch. The vast majority of protein have <10% PSMs at/below the notch, indicating the notch is unlikely to be problematic with this dataset.
-
-
-```{r , message=FALSE, results='hide'}
-psm_res %>% names() %>% lapply(function(x){
-  p <- plot_TMT_notch(psm_res[[x]]) + theme (plot.title = element_text(size=10, hjust = 0.5)) + ggtitle(x)
-  print(p)
-  
-  p <- plot_TMT_notch(psm_res[[x]], facet_by_sample=TRUE)  + theme (plot.title = element_text(size=10, hjust = 0.5)) + ggtitle(x)
-  print(p)
-  
-  return(NULL)
-})
-```
-* For the ratio mixes experiment, 129N was probably swabbed with 129C. So 129C is ratios of 1:10 rather than 1:5. Lower spike in ratios are associated with more spectra below the notch area. 
-
-* For light labelled samples, there is binomial peak of PSM intensity in all mixes excpet when all channels are labelled (e.g. mix5 for sampleTest and mix1 from labelswap)
-
-
-
-
-
-## Signal to noise
-We will still want to remove low Signal:Noise (S:N) PSMs, since the quantification values will be less accurate and there will be more missing values and sub-notch values. We can inspect the relationship between S:N and missing values using the `plot_missing_SN` function.
-```{r, message=FALSE, results='hide'}
-psm_res %>% names() %>% lapply(function(x){
-  p <- plot_missing_SN(psm_res[[x]], bins =30) +  theme (plot.title = element_text(size=10, hjust=0.5))  + ggtitle(x)
-  print(p)
-  p <- plot_missing_SN_per_sample(psm_res[[x]], bins =30) +  theme (plot.title = element_text(size=10, hjust=0.5))  + ggtitle(x)
-  print(p)
-
-  return(NULL)
-})
-
-```
-A signal to noise cutoff of 10 would probably lead to fewer missing values on the protein level. For most tags that are labeld there is low 
-
-```{r}
-for (i in seq(psm_res)){
- p<- summary(fData(psm_res[[i]])$Average.Reporter.SN)
- print(names(psm_res)[[i]])
- print(p)
-}
-```     
-
-```{r message=FALSE, results='hide'}
-psm_res %>% names() %>% lapply(function(x){
-p <-  ggplot(fData(psm_res[[x]]), aes(Average.Reporter.SN)) +
-geom_histogram(breaks=seq(0, 500, by = 50))+labs (x="Average Reporter SN") + ggtitle(x)
-print(p)
- 
-return(NULL)
-  
-})
-```
-
-## co-isolation intereference 
-Let's check co-isolation interference on the whole dataset
-```{r}
-
- # Isolation interference in percent
-for (i in seq(psm_res)){
- p<- summary(fData(psm_res[[i]])$Isolation.Interference.in.Percent)
- print(names(psm_res)[[i]])
- print(p)
-}
-```     
-
-```{r message=FALSE, results='hide'}     
-
-psm_res %>% names() %>% lapply(function(x){
-p <-  ggplot(fData(psm_res[[x]]), aes(Isolation.Interference.in.Percent)) +
-geom_histogram(breaks=seq(0, 100, by = 5))+labs (x="% Isolation interference") + ggtitle(x)
-print(p)
- 
-return(NULL)
-  
-})
-
-
-
-```
-`hyperplexTESTsample3_labelSwap_SPSMS3`shows lower distribution for co-isolation interference
-
-
-Lets check intensity distributions after filtering the co-isolation interference to 50 adn the signal to noise ratio to 10
-```{r, message=F, warning=FALSE, results='hide'}
-psm_res %>% names() %>% lapply(function(x){
- p <- plot_TMT_notch(psm_res[[x]]) +
-  ggtitle(paste(x,'Before filtering')) +
-  theme_camprot(base_size = 10)
-print(p)
-
-p <- filter_TMT_PSMs(psm_res[[x]], inter_thresh = 50, sn_thresh = 10)%>%plot_TMT_notch()+  ggtitle(paste(x,'After filtering')) +
-  theme_camprot(base_size = 10)
-print(p)
-  return(NULL)
-})
-
-```
-
-
-## plot missing values
-```{r}
-
-for (i in seq(psm_res)) {
-  naplot(psm_res[[i]], col="black", las = 2, reorderColumns = FALSE, 
-         main = names(psm_res)[i], cex.axis = 2)
-}
-```
 
 save PSM set
 ```{r}
 saveRDS(psm_res, "../results/psm/psm_raw_LOPIT.rds")
-
 ```
 

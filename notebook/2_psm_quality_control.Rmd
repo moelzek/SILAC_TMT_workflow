@@ -1,0 +1,283 @@
+---
+title: "PSM_qualityControl"
+author: "Mohamed Elzek"
+date: "`r format(Sys.time(), '%b %d %Y')`"
+output:
+  html_notebook:
+    number_sections: TRUE
+    toc: true
+    theme: 'cerulean'
+    highlight: 'tango'
+    code_folding: hide
+    df_print: paged
+    toc_float:
+      collapsed: FALSE
+      smooth_scroll: FALSE
+---
+
+
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(fig.width=12,fig.height=8,warning=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
+```
+
+```{r setup, warning=FALSE, message=FALSE}
+rm(list=ls())
+library(tidyverse)
+library(MSnbase)
+library(camprotR)
+library(ggplot2)
+library(RColorBrewer)
+library(knitr)
+library(kableExtra)
+library(VennDiagram)
+
+source("../configs/functions.R")
+source("../configs/psm_outlier_detection.R")
+psm_res <- readRDS("../results/psm/psm_raw_LOPIT.rds")
+```
+
+# Quality checks of the PSM level data
+## plot quantification distributions
+```{r, message=FALSE, warning=FALSE, results='hide'}
+psm_res %>% names() %>% lapply(function(x){
+  p <- psm_res[[x]] %>% log(base=2) %>%
+    plot_quant() +
+    ylab('PSM intensity (log2)')  +
+    theme_camprot() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                hjust = 1), plot.title = element_text(size=10, hjust=0.5)) +
+    ggtitle(x)
+  
+  print(p)
+  
+  return(NULL)
+})
+```
+
+
+## Notch inspection
+The distribution of TMT intensities obtained by Orbitrap has been observed to have a ‘notch’ where few values are observed [Hughes et al. 2017](https://pubs.acs.org/doi/10.1021/acs.jproteome.7b00092). This presence of the notch is dependent on the MS settings, most notably automatic gain control (AGC) target and maximum injection time, and the abundance of the peptides injected. We can inspect the notch using the `plot_TMT_notch` function, which annotates the notch region and the proportion of values below the upper notch boundary.
+
+Since this data was run on the Orbitrap Eclipse with the lastest tune software, we dont expect the notch to be of major influnce. In the case, we see that most proteins have zero PSM intensities below the notch. The vast majority of protein have <10% PSMs at/below the notch, indicating the notch is unlikely to be problematic with this dataset.
+
+
+```{r , message=FALSE, results='hide'}
+psm_res %>% names() %>% lapply(function(x){
+  p <- plot_TMT_notch(psm_res[[x]]) + theme (plot.title = element_text(size=10, hjust = 0.5)) + ggtitle(x)
+  print(p)
+  
+  p <- plot_TMT_notch(psm_res[[x]], facet_by_sample=TRUE)  + theme (plot.title = element_text(size=10, hjust = 0.5)) + ggtitle(x)
+  print(p)
+  
+  return(NULL)
+})
+```
+* For the ratio mixes experiment, 129N was probably swabbed with 129C. So 129C is ratios of 1:10 rather than 1:5. Lower spike in ratios are associated with more spectra below the notch area. 
+
+* For light labelled samples, there is binomial peak of PSM intensity in all mixes except when all channels are labelled (e.g. mix5 for sampleTest and mix1 from labelswap)
+
+
+
+
+
+## Signal to noise
+We will still want to remove low Signal:Noise (S:N) PSMs, since the quantification values will be less accurate and there will be more missing values and sub-notch values. We can inspect the relationship between S:N and missing values using the `plot_missing_SN` function.
+```{r, message=FALSE, results='hide'}
+psm_res %>% names() %>% lapply(function(x){
+  p <- plot_missing_SN(psm_res[[x]], bins =30) +  theme (plot.title = element_text(size=10, hjust=0.5))  + ggtitle(x)
+  print(p)
+  p <- plot_missing_SN_per_sample(psm_res[[x]], bins =30) +  theme (plot.title = element_text(size=10, hjust=0.5))  + ggtitle(x)
+  print(p)
+
+  return(NULL)
+})
+
+```
+A signal to noise cutoff of 10 would probably lead to fewer missing values on the protein level. For most tags that are labeld there is low 
+
+```{r}
+for (i in seq(psm_res)){
+ p<- summary(fData(psm_res[[i]])$Average.Reporter.SN)
+ print(names(psm_res)[[i]])
+ print(p)
+}
+```     
+
+```{r message=FALSE, results='hide'}
+psm_res %>% names() %>% lapply(function(x){
+p <-  ggplot(fData(psm_res[[x]]), aes(Average.Reporter.SN)) +
+geom_histogram(breaks=seq(0, 500, by = 50))+labs (x="Average Reporter SN") + ggtitle(x)
+print(p)
+ 
+return(NULL)
+  
+})
+```
+
+## co-isolation intereference 
+Let's check co-isolation interference on the whole dataset
+```{r}
+
+ # Isolation interference in percent
+for (i in seq(psm_res)){
+ p<- summary(fData(psm_res[[i]])$Isolation.Interference.in.Percent)
+ print(names(psm_res)[[i]])
+ print(p)
+}
+```     
+
+```{r message=FALSE, results='hide'}     
+
+psm_res %>% names() %>% lapply(function(x){
+p <-  ggplot(fData(psm_res[[x]]), aes(Isolation.Interference.in.Percent)) +
+geom_histogram(breaks=seq(0, 100, by = 5))+labs (x="% Isolation interference") + ggtitle(x)
+print(p)
+ 
+return(NULL)
+  
+})
+
+
+
+```
+`hyperplexTESTsample3_labelSwap_SPSMS3`shows lower distribution for co-isolation interference
+
+
+Lets check intensity distributions after filtering the co-isolation interference to 50 and the signal to noise ratio to 10
+```{r, message=F, warning=FALSE, results='hide'}
+psm_res %>% names() %>% lapply(function(x){
+ p <- plot_TMT_notch(psm_res[[x]]) +
+  ggtitle(paste(x,'Before filtering')) +
+  theme_camprot(base_size = 10)
+print(p)
+
+p <- filter_TMT_PSMs(psm_res[[x]], inter_thresh = 50, sn_thresh = 10)%>%plot_TMT_notch()+  ggtitle(paste(x,'After filtering')) +
+  theme_camprot(base_size = 10)
+print(p)
+  return(NULL)
+})
+
+```
+
+
+## plot missing values
+```{r}
+
+for (i in seq(psm_res)) {
+  naplot(psm_res[[i]], col="black", las = 2, reorderColumns = FALSE, 
+         main = names(psm_res)[i], cex.axis = 2)
+}
+```
+Next, a few plots to explore how the distances relate to PSM features we expect to be associated with outlier PSMs. Most importantly, the co-isolation, Delta score (difference between top possible spectrum matches) & average reporter SN. We will also consider the ion charge, the Delta mass (difference from expected mass), SPS matches, and the number of proteins the peptide could be assigned to
+```{r}
+
+detect_tmt_psm_outliers <- function(obj, master_prot_col='Master.Protein.Accessions'){
+  message('Identifying outlier PSMs')
+  
+  camprotR:::message_parse(fData(obj), master_prot_col, 'Input')
+  obj <- obj %>% normalise('sum')
+  camprotR:::message_parse(fData(obj), master_prot_col, 'Filtering PSMs with NAs')
+  
+  retain_proteins <- obj %>% fData() %>%
+    group_by(Master.Protein.Accessions) %>%
+    tally() %>%
+    filter(n>=2) %>%
+    pull(Master.Protein.Accessions)
+  
+  obj <- obj[fData(obj)[[master_prot_col]] %in% retain_proteins]
+  camprotR:::message_parse(fData(obj), master_prot_col, 'Filtering Proteins with <2 PSMs')
+  
+  prot_ids <- unique(fData(obj)[[master_prot_col]])
+  distances <- vector('list', length(prot_ids))
+  names(distances) <- prot_ids
+
+  pb <-txtProgressBar(min = 0, max = length(prot_ids), style = 1)
+  
+  for(prot_ix in seq_along(prot_ids)){
+    prot <- prot_ids[prot_ix]
+    prot_psms <- obj[fData(obj)[[master_prot_col]]==prot,]
+    
+    distances[[prot]] <- prot_psms %>%
+      exprs() %>%
+      dist() %>%
+      as.matrix() %>% data.frame() %>%
+      tibble::rownames_to_column('PSM2') %>%
+      pivot_longer(-PSM2, names_to='PSM1', values_to='distance') %>%
+      mutate(PSM1=remove_x(PSM1)) %>%
+      filter(PSM1!=PSM2) %>%
+      group_by(PSM1) %>%
+      summarise(median_distance=median(distance), .groups='drop') %>%
+      mutate(protein=prot)
+    
+    setTxtProgressBar(pb, prot_ix)
+  }
+  
+  distances <- do.call('rbind', distances)
+  
+  distances_annotated <- distances %>% merge(fData(obj), by.x='PSM1', by.y='row.names')
+  
+  return(distances_annotated)
+}
+
+psm_distances <- psm_res %>%
+  lapply(detect_tmt_psm_outliers)
+saveRDS(psm_distances, "../results/psm_distances.rds")
+```
+
+
+
+Here, we summarise the number of PSM (at least 2) for each proteins, Where there are fewer than 2 for a given protein, it will be replaced with NA.
+```{r}
+
+for (i in seq(psm_res)) {
+  print(names(psm_res)[i])
+  psm_2pep_filt <- psm_res[[i]] %>% 
+  restrict_features_per_protein(min_features = 2, plot = T) + stat_bin(binwidth = 0.25)
+}
+
+```
+The majority of proteins are identified with only one PSM
+
+
+
+# Aggregate PSM into peptides
+```{r, message=F, warning=F}
+source("../../CamProt_R/Utility.R")
+source("../../CamProt_R/LOPIT.R")
+
+pep_res <-NULL
+for (i in names(psm_res)) {
+  pep_res[[i]] <- psm_res[[i]] %>%  agg_to_peptides(fun="median", seq_col='Annotated.Sequence' )
+}
+```
+
+
+
+Here we measure the frequency of one hit wonders: the tally of peptides per proteins
+```{r fig.height=6, fig.width=6}
+plotPepCounts <- function(res_pep_agg){
+fData(res_pep_agg) <- fData(res_pep_agg)[,-grep("CV.*", colnames(fData(res_pep_agg)))]
+
+gb <- fData(res_pep_agg)$Master.Protein.Accessions
+gb <- factor(gb, levels = unique(gb))
+peptide_counts <- as.data.frame(table(gb))
+
+print(sprintf("Out of %s master proteins, we have %s one-hit wonder proteins (%s %%)",
+              length(unique(gb)), sum(peptide_counts==1),
+              round(100*sum(peptide_counts==1)/length(unique(gb)), 1)))
+
+p <- ggplot(peptide_counts, aes(log(Freq,2))) + geom_histogram() + my_theme + stat_bin(binwidth=0.25) + xlab("Frequency of peptide/protein (log2)") +theme(text = element_text(size=10))
+
+}
+
+
+for (i in seq(pep_res)) {
+   d <- pep_res[[i]] %>% plotPepCounts() + ggtitle(names(pep_res)[[i]])
+   print(d)
+}
+
+```
+In agreement with PSM data, 30-50% of proteins are identified with one
+
+
+
